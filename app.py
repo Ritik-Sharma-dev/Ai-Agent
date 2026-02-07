@@ -10,7 +10,11 @@ import openai
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 # Set API key for OpenAI
-openai.api_key = ("OPENAI_API_KEY")
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+if not openai.api_key:
+    st.error("OPENAI_API_KEY not found in .env file")
+    st.stop()
 st.set_page_config(page_title="JD -> Cover Letter + Video Script", layout="wide")
 
 # ------------------ Helpers ------------------
@@ -70,40 +74,127 @@ def extract_requirements(jd_text):
             except Exception:
                 return {"raw": out}
         return {"raw": out}
+    
+def normalize_requirements(requirements_json):
+    system = {
+        "role": "system",
+        "content": (
+            "You are an expert tech recruiter and software architect. "
+            "Your job is to translate vague, metaphorical, or HR-fluff requirements "
+            "into concrete, industry-standard skills, responsibilities, tools, and role titles. "
+            "Avoid metaphors. Be specific and realistic."
+        )
+    }
+
+    user = {
+        "role": "user",
+        "content": f"""
+Given the following extracted job requirements JSON, rewrite it into a NORMALIZED, CONCRETE version.
+
+Rules:
+- Replace metaphors with real technical skills and responsibilities
+- Infer the most likely real-world job title
+- Fill in skills and keywords with real technologies and concepts
+- Keep the same JSON structure
+- Output ONLY valid JSON
+
+Input JSON:
+{json.dumps(requirements_json, ensure_ascii=False, indent=2)}
+"""
+    }
+
+    out = call_chat_model([system, user], max_tokens=800, temperature=0)
+
+    try:
+        return json.loads(out)
+    except Exception:
+        start = out.find("{")
+        end = out.rfind("}")
+        if start != -1 and end != -1:
+            try:
+                return json.loads(out[start:end+1])
+            except Exception:
+                return {"raw": out}
+        return {"raw": out}
+
 
 def generate_cover_letter(profile_text, requirements_json, job_title, tone="professional"):
-    system = {"role":"system","content":"You are a helpful career coach that writes tailored cover letters."}
-    user = {"role":"user","content":f"""
-Write a concise, tailored cover letter for the job below. Use the candidate's profile to highlight exact matches to the MUST_HAVE requirements.
-Keep it to ~300-400 words. Use a confident, {tone} tone.
+    system = {
+        "role": "system",
+        "content": (
+            "You are a senior technical recruiter and hiring manager. "
+            "You write sharp, concrete, evidence-based cover letters for software and ML engineers. "
+            "You avoid generic phrases, avoid fluff, and prefer specific technologies, systems, and outcomes. "
+            "You write like someone who has shipped production systems."
+        )
+    }
+
+    user = {
+        "role": "user",
+        "content": f"""
+Write a concise, high-quality cover letter for the job below.
+
+Rules:
+- Use concrete examples, tools, and systems wherever possible
+- Prefer actions and results over generic claims
+- Avoid phrases like "I am confident" and "I am excited" unless backed by evidence
+- If the resume lacks metrics, infer reasonable, conservative impact statements
+- Keep it ~300-400 words
+- Match the tone: {tone}
+- Write like a mid-to-senior engineer applying for a real production role
 
 Job title: {job_title}
-Extracted requirements JSON: {json.dumps(requirements_json, ensure_ascii=False)}
+
+Normalized requirements JSON:
+{json.dumps(requirements_json, ensure_ascii=False, indent=2)}
 
 Candidate profile / resume:
 {profile_text}
 
-Output the cover letter as plain text (no headers).
-"""}
+Output only the cover letter text (no headers).
+"""
+    }
+
     out = call_chat_model([system, user], max_tokens=700, temperature=0.2)
     return out
 
+
 def generate_video_script(profile_text, requirements_json, job_title, name="Candidate"):
-    system = {"role":"system","content":"You are a scriptwriter for short professional intro videos."}
-    user = {"role":"user","content":f"""
-Produce a one-minute (60 seconds) video script introducing the candidate for this role.
-Provide timestamps for sections (e.g., 0:00-0:10) and short camera/shot suggestions (e.g., medium close-up).
-Keep it natural, concise and persuasive.
+    system = {
+        "role": "system",
+        "content": "You are a scriptwriter for short professional self-introduction videos for tech candidates."
+    }
+
+    user = {
+        "role": "user",
+        "content": f"""
+Create a 60-second professional self-introduction video script for a job application.
+
+Rules:
+- Use concrete, professional language (no metaphors)
+- Reference relevant skills and experience from the profile and job requirements
+- Include timestamps (e.g., 0:00–0:10, 0:10–0:30, etc.)
+- Include short camera/shot suggestions in brackets
+- End with a short, confident call-to-action line
+- Keep it realistic and suitable for LinkedIn or company career pages
 
 Job title: {job_title}
-Extracted requirements: {json.dumps(requirements_json, ensure_ascii=False)}
-Candidate profile:
+
+Normalized job requirements:
+{json.dumps(requirements_json, ensure_ascii=False, indent=2)}
+
+Candidate name: {name}
+
+Candidate profile / resume:
 {profile_text}
 
-Make the script ~60 seconds and include a 1-line spoken call-to-action at the end (e.g., 'I'd love to discuss how I can help at ...').
-"""}
+Output only the script text.
+"""
+    }
+
     out = call_chat_model([system, user], max_tokens=500, temperature=0.3)
     return out
+
 
 # ------------------ Streamlit UI ------------------
 st.title("AI Agent — JD → Tailored Cover Letter + 1-minute Video Script")
@@ -127,17 +218,21 @@ if st.button("Generate tailored cover letter + video script"):
             st.error("Please upload a job description to continue.")
         else:
             requirements = extract_requirements(jd_text)
-            st.subheader("Extracted requirements")
+            st.subheader("Extracted requirements (raw)")
             st.json(requirements)
 
-            job_title = job_title_override.strip() or (requirements.get("title") if isinstance(requirements, dict) else "")
+            normalized = normalize_requirements(requirements)
+            st.subheader("Normalized requirements (concrete & real-world)")
+            st.json(normalized)
 
-            cover = generate_cover_letter(profile_text, requirements, job_title, tone=tone)
+            job_title = job_title_override.strip() or (normalized.get("title") if isinstance(normalized, dict) else "")
+
+            cover = generate_cover_letter(profile_text, normalized, job_title, tone=tone)
             st.subheader("Tailored cover letter")
             st.text_area("Cover letter", cover, height=300)
             st.download_button("Download cover letter (.txt)", cover, file_name="cover_letter.txt")
 
-            script = generate_video_script(profile_text, requirements, job_title, name=name)
+            script = generate_video_script(profile_text, normalized, job_title, name=name)
             st.subheader("1-minute video script")
             st.text_area("Video script", script, height=260)
             st.download_button("Download video script (.txt)", script, file_name="video_script.txt")
