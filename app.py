@@ -49,6 +49,31 @@ def call_chat_model(messages, max_tokens=800, temperature=0, model="gpt-3.5-turb
     )
     return resp.choices[0].message["content"]
 
+#-------------------------------------------------------
+
+def extract_resume_skills(resume_text):
+    system = {"role": "system", "content": "You are an expert resume parser."}
+    user = {
+        "role": "user",
+        "content": f"""
+        Extract the technical skills from this resume text.
+        Output a JSON object with a single key "skills" containing a list of strings.
+        
+        Resume Text:
+        {resume_text}
+        
+        Output only valid JSON.
+        """
+    }
+    out = call_chat_model([system, user], max_tokens=300, temperature=0)
+    try:
+        return json.loads(out).get("skills", [])
+    except:
+        return []
+    
+
+
+
 # ------------------ Core Functions ------------------
 def extract_requirements(jd_text):
     system = {"role":"system","content":"You are an expert technical recruiter and extractor. Return only valid JSON (no markdown)."}
@@ -122,41 +147,85 @@ def generate_cover_letter(profile_text, requirements_json, job_title, tone="prof
     system = {
         "role": "system",
         "content": (
-            "You are a senior technical recruiter and hiring manager. "
-            "You write sharp, concrete, evidence-based cover letters for software and ML engineers. "
-            "You avoid generic phrases, avoid fluff, and prefer specific technologies, systems, and outcomes. "
-            "You write like someone who has shipped production systems."
+            "You are an expert career coach and technical writer. "
+            "You write high-impact cover letters that connect a candidate's SPECIFIC projects "
+            "to the job requirements. "
+            "DO NOT lie about seniority. If the candidate is a junior/intern, "
+            "focus heavily on their projects, quick learning, and hands-on work. "
+            "DO NOT use generic phrases like 'I am writing to apply'. "
+            "Instead, start with a strong hook about the candidate's relevant work."
         )
     }
 
     user = {
         "role": "user",
         "content": f"""
-Write a concise, high-quality cover letter for the job below.
+Write a high-impact, evidence-based cover letter for the job below.
 
-Rules:
-- Use concrete examples, tools, and systems wherever possible
-- Prefer actions and results over generic claims
-- Avoid phrases like "I am confident" and "I am excited" unless backed by evidence
-- If the resume lacks metrics, infer reasonable, conservative impact statements
-- Keep it ~300-400 words
-- Match the tone: {tone}
-- Write like a mid-to-senior engineer applying for a real production role
+JOB TITLE: {job_title}
 
-Job title: {job_title}
-
-Normalized requirements JSON:
+JOB REQUIREMENTS (Normalized):
 {json.dumps(requirements_json, ensure_ascii=False, indent=2)}
 
-Candidate profile / resume:
+CANDIDATE PROFILE:
 {profile_text}
 
-Output only the cover letter text (no headers).
+STRICT WRITING RULES:
+1. **The Hook:** Start by mentioning a SPECIFIC project or achievement from the profile that matches the job's key skills (e.g., "I recently built an AI Agent using Python..."). Do not start with "I am writing to apply...".
+2. **Evidence over Claims:** Don't just say "I have experience with APIs." Say "I built [Project Name] using FastAPI to handle [specific task]."
+3. **Honesty:** If the JD asks for 5 years and the candidate has less, do not fake "years of experience." Frame it as "Intensive project experience" or "Proven ability to ship production-ready code."
+4. **Tone:** {tone}. Confident, specific, and humble.
+5. **Call to Action:** End with a specific request (e.g., "I’d love to walk you through my code for [Project Name].")
+
+Output only the body of the letter (no headers like 'Subject:' or placeholders).
 """
     }
 
-    out = call_chat_model([system, user], max_tokens=700, temperature=0.2)
+    out = call_chat_model([system, user], max_tokens=700, temperature=0.3)
     return out
+
+def analyze_fit(profile_text, requirements_json):
+    system = {
+        "role": "system", 
+        "content": (
+            "You are a strict technical recruiter. Your job is to analyze the gap between "
+            "a candidate's resume and a job description. "
+            "You provide brutal but helpful feedback."
+        )
+    }
+    
+    user = {
+        "role": "user",
+        "content": f"""
+        Compare this candidate to the job requirements and provide a gap analysis.
+        
+        Job Requirements: {json.dumps(requirements_json)}
+        Candidate Profile: {profile_text}
+        
+        Output a JSON object with exactly these keys:
+        1. "match_score": (integer 0-100)
+        2. "missing_keywords": (array of strings, listing critical skills the candidate lacks)
+        3. "project_idea": (string, a specific project idea they should build THIS WEEK to bridge the gap)
+        4. "advice": (string, 1-2 sentences on how to position themselves despite the gaps)
+        
+        Output ONLY valid JSON.
+        """
+    }
+    
+    out = call_chat_model([system, user], max_tokens=500, temperature=0)
+    
+    try:
+        return json.loads(out)
+    except Exception:
+        # Fallback manual parsing if the LLM adds markdown
+        start = out.find("{")
+        end = out.rfind("}")
+        if start != -1 and end != -1:
+            try:
+                return json.loads(out[start:end+1])
+            except Exception:
+                return {"match_score": 0, "advice": "Error parsing AI response.", "project_idea": "N/A", "missing_keywords": []}
+        return {"match_score": 0, "advice": "Error parsing AI response.", "project_idea": "N/A", "missing_keywords": []}
 
 
 def generate_video_script(profile_text, requirements_json, job_title, name="Candidate"):
@@ -197,7 +266,7 @@ Output only the script text.
 
 
 # ------------------ Streamlit UI ------------------
-st.title("AI Agent — JD → Tailored Cover Letter + 1-minute Video Script")
+st.title("AI Agent — JD → Tailored Cover Letter + Video Script")
 
 with st.sidebar:
     st.markdown("## Upload inputs")
@@ -214,26 +283,99 @@ if st.button("Generate tailored cover letter + video script"):
         jd_text = read_file_text(jd_file) if jd_file else ""
         resume_text = read_file_text(resume_file) if resume_file else ""
         profile_text = profile_text_input.strip() or resume_text
+        
         if not jd_text:
             st.error("Please upload a job description to continue.")
         else:
+            # 1. Extract Requirements
             requirements = extract_requirements(jd_text)
             st.subheader("Extracted requirements (raw)")
-            st.json(requirements)
+            with st.expander("Show Raw JSON"):
+                st.json(requirements)
 
+            # 2. Normalize Requirements
             normalized = normalize_requirements(requirements)
+            
+            # --- NEW: Extract Resume Skills for Comparison ---
+            with st.spinner("Analyzing resume skills..."):
+                resume_skills = extract_resume_skills(profile_text)
+            
+            # --- NEW: Skills Snapshot UI ---
+            st.markdown("---")
+            st.subheader("⚔️ Skills Snapshot: You vs. The Job")
+            
+            # Create two columns for side-by-side comparison
+            s_col1, s_col2 = st.columns(2)
+            
+            with s_col1:
+                st.markdown("#### 🧑‍💻 Your Resume Skills")
+                # Display as clear tags
+                if resume_skills:
+                    st.write(", ".join([f"`{s}`" for s in resume_skills]))
+                else:
+                    st.warning("No specific skills detected in resume.")
+
+            with s_col2:
+                st.markdown("#### 🏢 Job Requirements")
+                # Get skills from the normalized JD JSON
+                jd_skills = normalized.get("skills", []) or normalized.get("keywords", [])
+                if jd_skills:
+                    st.write(", ".join([f"`{s}`" for s in jd_skills[:15]])) # Show top 15 to avoid clutter
+                else:
+                    st.warning("No specific skills detected in JD.")
+            
+            # -----------------------------------------------
+
             st.subheader("Normalized requirements (concrete & real-world)")
-            st.json(normalized)
+            with st.expander("Show Normalized JSON"):
+                st.json(normalized)
 
+            # 3. Analyze Fit (NEW SECTION)
+            st.markdown("---")
+            st.subheader("📊 Match Analysis & Strategy")
+            
+            with st.spinner("Analyzing your resume against the JD..."):
+                analysis = analyze_fit(profile_text, normalized)
+
+            # Display Score with dynamic color
+            score = analysis.get("match_score", 0)
+            if score >= 80:
+                st.markdown(f"### Match Score: :green[{score}%] 🚀")
+            elif score >= 50:
+                st.markdown(f"### Match Score: :orange[{score}%] ⚠️")
+            else:
+                st.markdown(f"### Match Score: :red[{score}%] 🛑")
+
+            # Display Analysis Columns
+            col1, col2 = st.columns(2)
+            with col1:
+                st.info(f"**💡 Strategic Advice:**\n\n{analysis.get('advice')}")
+            with col2:
+                missing = analysis.get('missing_keywords', [])
+                if missing:
+                    st.error(f"**❌ Missing Keywords:**\n\n{', '.join(missing)}")
+                else:
+                    st.success("**✅ No critical keywords missing!**")
+            
+            # Project Recommendation
+            st.success(f"**🛠 Recommended Project to Bridge the Gap:**\n\n*{analysis.get('project_idea')}*")
+            st.markdown("---")
+
+            # 4. Generate Cover Letter
             job_title = job_title_override.strip() or (normalized.get("title") if isinstance(normalized, dict) else "")
-
-            cover = generate_cover_letter(profile_text, normalized, job_title, tone=tone)
-            st.subheader("Tailored cover letter")
+            
+            with st.spinner("Drafting cover letter..."):
+                cover = generate_cover_letter(profile_text, normalized, job_title, tone=tone)
+            
+            st.subheader("Tailored Cover Letter")
             st.text_area("Cover letter", cover, height=300)
             st.download_button("Download cover letter (.txt)", cover, file_name="cover_letter.txt")
 
-            script = generate_video_script(profile_text, normalized, job_title, name=name)
-            st.subheader("1-minute video script")
+            # 5. Generate Video Script
+            with st.spinner("Writing video script..."):
+                script = generate_video_script(profile_text, normalized, job_title, name=name)
+            
+            st.subheader("1-minute Video Script")
             st.text_area("Video script", script, height=260)
             st.download_button("Download video script (.txt)", script, file_name="video_script.txt")
 
