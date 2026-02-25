@@ -1,22 +1,23 @@
-# app.py
 import streamlit as st
 import os, io, json
 from dotenv import load_dotenv
 import pdfplumber
 from docx import Document
-import openai
+from openai import OpenAI
 
 # Load .env
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+# Load .env from the root directory
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 # Set API key for OpenAI
-openai.api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
 
-if not openai.api_key:
+if not api_key:
     st.error("OPENAI_API_KEY not found in .env file")
     st.stop()
 st.set_page_config(page_title="JD -> Cover Letter + Video Script", layout="wide")
 
+client = OpenAI(api_key=api_key)
 # ------------------ Helpers ------------------
 def read_file_text(uploaded_file):
     if uploaded_file is None:
@@ -41,13 +42,15 @@ def read_file_text(uploaded_file):
         return data.decode("utf-8", errors="ignore")
 
 def call_chat_model(messages, max_tokens=800, temperature=0, model="gpt-3.5-turbo"):
-    resp = openai.ChatCompletion.create(
+    # Use the new client.chat.completions.create syntax
+    resp = client.chat.completions.create(
         model=model,
         messages=messages,
         max_tokens=max_tokens,
         temperature=temperature
     )
-    return resp.choices[0].message["content"]
+    # The new library uses dot notation (.content) instead of dictionary access (["content"])
+    return resp.choices[0].message.content
 
 #-------------------------------------------------------
 
