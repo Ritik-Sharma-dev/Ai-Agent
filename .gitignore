@@ -8,3 +8,27 @@ __pycache__/
 # Ignore virtual environment folder
 venv/
 venv/
+.vscode/
+New_Resume.pdf
+# VS Code
+.vscode/
+
+# Chroma / Vector DB / Local DB artifacts
+chroma.sqlite3
+*.sqlite
+*.sqlite3
+
+# LevelDB / Chroma internal files
+data_leveldb/
+*.bin
+*.log
+*.idx
+*.lock
+
+# Cache / temp
+__pycache__/
+*.pyc
+*.pyo
+
+# Uploaded files / local assets
+New_Resume.pdf
